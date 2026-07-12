@@ -1,0 +1,1 @@
+[cache hygiene: omitted completed write.content argument, 1.5KB, approx 476 token(s), 62 line(s); see following tool result] preview="# GLTF to FBX Converter 依赖列表 # ============================== # 本工具本身无需安装额外 Python 包,核心转换由 Blender 完成。 # 以下仅用于可选的独立脚本功能测试。 # # 安装方式: pip install -r requirements.txt trimesh>=4.0.0,<5.0.0 numpy>=1.24.0,<3.0.0"
