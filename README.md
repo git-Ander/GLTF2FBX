@@ -2,6 +2,8 @@
 
 使用 **Blender** 作为后端引擎,将 GLTF/GLB 3D 模型转换为 FBX 格式。
 
+![主界面](GUI.png)
+
 ## 功能
 
 - ✅ **GLB** (Binary) 和 **GLTF** (JSON) 输入
