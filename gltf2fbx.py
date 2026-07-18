@@ -157,6 +157,54 @@ def convert_inside_blender():
 
 
 # ─── Blender 内执行的减面逻辑 ───────────────────────────────────────────
+def info_inside_blender():
+    """在 Blender Python 环境内执行。导入 FBX → 统计网格信息 → 输出结构化数据。"""
+    import bpy
+
+    argv = sys.argv
+    if "--" in argv:
+        argv = argv[argv.index("--") + 1:]
+    else:
+        print("错误: 未找到 -- 分隔符。")
+        sys.exit(1)
+
+    parser = argparse.ArgumentParser(description="FBX Info (Blender backend)")
+    parser.add_argument("--mode", default="info")
+    parser.add_argument("--input", required=True, help="输入 FBX 文件路径")
+    args = parser.parse_args(argv)
+
+    input_path = Path(args.input).resolve()
+    if not input_path.exists():
+        print(f"INFO:ERROR:文件不存在: {input_path}")
+        sys.exit(1)
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    try:
+        bpy.ops.import_scene.fbx(filepath=str(input_path))
+    except Exception as e:
+        print(f"INFO:ERROR:FBX 导入失败: {e}")
+        sys.exit(1)
+
+    total_faces = 0
+    total_verts = 0
+    mesh_count = 0
+    unique_positions = set()
+    for obj in bpy.data.objects:
+        if obj.type == 'MESH':
+            mesh_count += 1
+            total_faces += len(obj.data.polygons)
+            for v in obj.data.vertices:
+                unique_positions.add(v.co[:])
+    total_verts = len(unique_positions)
+
+    file_size = input_path.stat().st_size
+    print(f"INFO:FACES:{total_faces}")
+    print(f"INFO:VERTS:{total_verts}")
+    print(f"INFO:MESHES:{mesh_count}")
+    print(f"INFO:SIZE:{file_size}")
+    print(f"INFO:OK")
+
+
 def decimate_inside_blender():
     """在 Blender Python 环境内执行。导入 FBX → 应用 Decimate 修改器 → 导出 FBX。"""
     import bpy
@@ -261,11 +309,25 @@ def decimate_inside_blender():
         sys.exit(1)
 
     print(f"✓ 减面完成: {output_path}")
-    print(f"  文件大小: {output_path.stat().st_size / 1024:.1f} KB")
 
-    mesh_count = len([o for o in bpy.data.objects if o.type == 'MESH'])
-    armature_count = len([o for o in bpy.data.objects if o.type == 'ARMATURE'])
-    print(f"  网格: {mesh_count}, 骨架: {armature_count}")
+    # 统计减面后信息 (与 info 模式格式一致, 供 GUI 解析)
+    total_faces_after = 0
+    unique_positions = set()
+    mesh_count = 0
+    for obj in bpy.data.objects:
+        if obj.type == 'MESH':
+            mesh_count += 1
+            total_faces_after += len(obj.data.polygons)
+            for v in obj.data.vertices:
+                unique_positions.add(v.co[:])
+    total_verts_after = len(unique_positions)
+    out_size = output_path.stat().st_size
+
+    print(f"INFO:FACES:{total_faces_after}")
+    print(f"INFO:VERTS:{total_verts_after}")
+    print(f"INFO:MESHES:{mesh_count}")
+    print(f"INFO:SIZE:{out_size}")
+    print(f"INFO:OK")
 
 
 # ─── 包装 CLI: 自动查找 Blender ─────────────────────────────────────────
@@ -452,6 +514,8 @@ if __name__ == "__main__":
                 mode = post[idx + 1]
         if mode == "decimate":
             decimate_inside_blender()
+        elif mode == "info":
+            info_inside_blender()
         else:
             convert_inside_blender()
     else:

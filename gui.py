@@ -64,6 +64,19 @@ T = {
     "err_input_dec": {"cn":"请选择 FBX 输入文件", "en":"Please select an FBX input file"},
     "err_mismatch":{"cn":"文件格式不匹配！\n\n拖入的文件后缀: {}\n需要的后缀: {}", "en":"File format mismatch!\n\nDropped: {}\nRequired: {}"},
     "log_ratio":  {"cn":"  减面: {}%",  "en":"  Ratio:  {}%"},
+    "info_title": {"cn":"📋 模型信息",  "en":"📋 Model Info"},
+    "info_faces": {"cn":"三角形: {:,}",  "en":"Triangles: {:,}"},
+    "info_verts": {"cn":"顶点: {:,}",  "en":"Vertices: {:,}"},
+    "info_meshes":{"cn":"网格: {}",    "en":"Meshes: {}"},
+    "info_size":  {"cn":"大小: {:.1f} MB","en":"Size: {:.1f} MB"},
+    "info_pred":  {"cn":"🔮 预测输出", "en":"🔮 Predicted Output"},
+    "info_pred_faces":{"cn":"三角形: {:,} ({:.0f}%)","en":"Triangles: {:,} ({:.0f}%)"},
+    "info_pred_verts":{"cn":"顶点: {:,}","en":"Vertices: {:,}"},
+    "info_pred_size":{"cn":"大小: ~{:.1f} MB","en":"Size: ~{:.1f} MB"},
+    "info_loading":{"cn":"⏳ 读取模型信息...","en":"⏳ Reading model info..."},
+    "info_failed":{"cn":"❌ 读取信息失败","en":"❌ Failed to read info"},
+    "info_result":{"cn":"✅ 减面结果","en":"✅ Decimation Result"},
+    "info_reduction":{"cn":"减少: {:,} → {:,} ({:.1f}%)","en":"Reduced: {:,} → {:,} ({:.1f}%)"},
 }
 L = list(T.keys())
 
@@ -98,6 +111,7 @@ class App(ctk.CTk):
         self.blender_path = find_blender() or ""
         self.input_path = ""; self.output_path = ""
         self.mode = "convert"
+        self._fbx_info = None  # (faces, verts, meshes, size_bytes)
         self._build_ui()
         self._update_blender_status()
         self._setup_dnd()
@@ -288,11 +302,80 @@ class App(ctk.CTk):
     def _on_scale(self, val): self.scale_var.set(f"{float(val):.2f}")
     def _set_scale(self, val): self.scale_slider.set(val); self.scale_var.set(f"{val:.2f}")
 
-    def _on_decimate(self, val): self.dec_var.set(f"{int(val)}%")
-    def _set_decimate(self, val): self.dec_slider.set(val); self.dec_var.set(f"{val}%")
+    def _on_decimate(self, val): self.dec_var.set(f"{int(val)}%"); self._update_prediction()
+    def _set_decimate(self, val): self.dec_slider.set(val); self.dec_var.set(f"{val}%"); self._update_prediction()
     def _get_decimate_ratio(self):
         try: return float(self.dec_var.get().replace("%","").strip()) / 100.0
         except: return 0.5
+
+    def _fetch_fbx_info(self, path):
+        """Run Blender in background to read FBX mesh stats."""
+        bl = self.blender_var.get().strip()
+        if not bl or not os.path.isfile(bl): return
+        sp = Path(__file__).parent / "gltf2fbx.py"
+        if not sp.exists(): sp = Path.cwd() / "gltf2fbx.py"
+        self._fbx_info = None
+        self._clear_log()
+        self._log(self.tr("info_loading"))
+        def _worker():
+            cmd = [bl, "--background", "--python", str(sp.resolve()),
+                   "--", "--mode", "info", "--input", path]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace",
+                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=="win32" else 0)
+                info = {}
+                for line in proc.stdout.splitlines():
+                    if line.startswith("INFO:"):
+                        parts = line[5:].split(":", 1)
+                        if len(parts) == 2: info[parts[0]] = parts[1]
+                if "INFO:OK" in proc.stdout:
+                    info = {}
+                    for line in proc.stdout.splitlines():
+                        if line.startswith("INFO:") and line != "INFO:OK":
+                            parts = line[5:].split(":", 1)
+                            if len(parts) == 2: info[parts[0]] = parts[1]
+                    faces = int(info.get("FACES", 0))
+                    verts = int(info.get("VERTS", 0))
+                    meshes = int(info.get("MESHES", 0))
+                    size = int(info.get("SIZE", 0))
+                    self._fbx_info = (faces, verts, meshes, size)
+                    self.after(0, lambda: self._display_fbx_info())
+                else:
+                    self.after(0, lambda: [self._clear_log(), self._log(self.tr("info_failed"))])
+            except Exception:
+                self.after(0, lambda: [self._clear_log(), self._log(self.tr("info_failed"))])
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _display_fbx_info(self):
+        if not self._fbx_info: return
+        t = self.tr; faces, verts, meshes, size = self._fbx_info
+        size_mb = size / (1024 * 1024)
+        self._clear_log()
+        self._log("="*46)
+        self._log(t("info_title"))
+        self._log("="*46)
+        self._log(f"  {t('info_faces', faces)}")
+        self._log(f"  {t('info_verts', verts)}")
+        self._log(f"  {t('info_meshes', meshes)}")
+        self._log(f"  {t('info_size', size_mb)}")
+        self._log("-"*46)
+        self._update_prediction()
+
+    def _update_prediction(self):
+        if not self._fbx_info: return
+        t = self.tr; faces, verts, meshes, size = self._fbx_info
+        ratio = self._get_decimate_ratio()
+        pred_faces = int(faces * ratio)
+        pred_verts = int(verts * ratio)
+        pred_size = size * ratio
+        pred_mb = pred_size / (1024 * 1024)
+        self._log("-"*46)
+        self._log(t("info_pred"))
+        self._log(f"  {t('info_pred_faces', pred_faces, ratio*100)}")
+        self._log(f"  {t('info_pred_verts', pred_verts)}")
+        self._log(f"  {t('info_pred_size', pred_mb)}")
+        self._log("="*46)
 
     def _on_mode_change(self, value):
         self.mode = "decimate" if value == self.tr("mode_dec") else "convert"
@@ -329,6 +412,8 @@ class App(ctk.CTk):
             self.status_var.set(t("ready_dec"))
         self.input_var.set(""); self.output_var.set("")
         self.input_path = ""; self.output_path = ""
+        self._fbx_info = None
+        self._clear_log()
         self._register_dnd_recursive(self)
 
     def _log(self, text):
@@ -346,6 +431,7 @@ class App(ctk.CTk):
                 stem = Path(p).stem; o = str(Path(p).with_name(stem + "_low.fbx"))
                 self.output_var.set(o); self.output_path = o
                 self.status_var.set(self.tr("input_status", Path(p).name))
+                self._fetch_fbx_info(p)
         else:
             p = filedialog.askopenfilename(title="GLTF/GLB", filetypes=[("GLTF","*.gltf *.glb"),("All","*.*")])
             if p:
@@ -376,6 +462,8 @@ class App(ctk.CTk):
                     o = str(Path(c).with_suffix(".fbx"))
                 self.output_var.set(o); self.output_path = o
                 self.status_var.set(self.tr("input_status", Path(c).name))
+                if self.mode == "decimate":
+                    self._fetch_fbx_info(c)
                 return
         if cand:
             messagebox.showwarning("",
@@ -430,13 +518,19 @@ class App(ctk.CTk):
             cmd.extend(["--scale", self.scale_var.get()])
             if not self.bake_var.get(): cmd.append("--no-bake")
             if not self.modifier_var.get(): cmd.append("--no-modifiers")
+        # collect INFO: lines from decimate output
+        info_lines = []
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                      text=True, encoding="utf-8", errors="replace", bufsize=1,
                                      creationflags=subprocess.CREATE_NO_WINDOW if sys.platform=="win32" else 0)
             for line in proc.stdout:
                 line = line.rstrip()
-                if line: self.after(0, lambda l=line: self._log(l))
+                if line:
+                    if is_dec and line.startswith("INFO:"):
+                        info_lines.append(line)
+                    else:
+                        self.after(0, lambda l=line: self._log(l))
             proc.wait()
             if proc.returncode == 0 and os.path.isfile(self.output_path):
                 kb = os.path.getsize(self.output_path) / 1024
@@ -444,6 +538,31 @@ class App(ctk.CTk):
                 self.after(0, lambda: [self._log("-"*46), self._log(t("log_done")),
                     self._log(f"  Output: {self.output_path}"),
                     self._log(f"  Size:   {kb:.1f} KB"), self.status_var.set(t(done_key))])
+                if is_dec:
+                    # parse actual result info
+                    info = {}
+                    for line in info_lines:
+                        if line.startswith("INFO:") and line != "INFO:OK":
+                            parts = line[5:].split(":", 1)
+                            if len(parts) == 2: info[parts[0]] = parts[1]
+                    if info.get("FACES") and self._fbx_info:
+                        orig_faces = self._fbx_info[0]
+                        act_faces = int(info.get("FACES", 0))
+                        act_verts = int(info.get("VERTS", 0))
+                        act_meshes = int(info.get("MESHES", 0))
+                        act_size = int(info.get("SIZE", 0))
+                        act_mb = act_size / (1024 * 1024)
+                        pct = act_faces / orig_faces * 100 if orig_faces > 0 else 0
+                        self.after(0, lambda: [
+                            self._log("-"*46),
+                            self._log(t("info_result")),
+                            self._log(f"  {t('info_faces', act_faces)}"),
+                            self._log(f"  {t('info_verts', act_verts)}"),
+                            self._log(f"  {t('info_meshes', act_meshes)}"),
+                            self._log(f"  {t('info_size', act_mb)}"),
+                            self._log(f"  {t('info_reduction', orig_faces, act_faces, pct)}"),
+                            self._log("="*46),
+                        ])
                 self.after(0, lambda: messagebox.showinfo("Done", t("done_msg", self.output_path, kb)))
             else:
                 fail_key = "failed_dec" if is_dec else "failed"
