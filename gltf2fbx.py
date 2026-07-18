@@ -156,6 +156,118 @@ def convert_inside_blender():
     print(f"  网格: {mesh_count}, 骨架: {armature_count}")
 
 
+# ─── Blender 内执行的减面逻辑 ───────────────────────────────────────────
+def decimate_inside_blender():
+    """在 Blender Python 环境内执行。导入 FBX → 应用 Decimate 修改器 → 导出 FBX。"""
+    import bpy
+
+    # 从命令行参数中提取 (在 -- 之后)
+    argv = sys.argv
+    if "--" in argv:
+        argv = argv[argv.index("--") + 1:]
+    else:
+        print("错误: 未找到 -- 分隔符。用法: blender --background --python gltf2fbx.py -- --mode decimate --input x.fbx --output y.fbx")
+        sys.exit(1)
+
+    parser = argparse.ArgumentParser(description="FBX Decimate (Blender backend)")
+    parser.add_argument("--mode", default="decimate", help="工作模式 (自动处理)")
+    parser.add_argument("--input", required=True, help="输入 FBX 文件路径")
+    parser.add_argument("--output", required=True, help="输出 FBX 文件路径")
+    parser.add_argument("--ratio", type=float, default=0.5,
+                        help="目标面数比例 (0.01-1.0, 默认 0.5 = 保留 50%)")
+    args = parser.parse_args(argv)
+
+    input_path = Path(args.input).resolve()
+    output_path = Path(args.output).resolve()
+
+    if not input_path.exists():
+        print(f"错误: 输入文件不存在: {input_path}")
+        sys.exit(1)
+
+    ratio = max(0.01, min(1.0, args.ratio))
+
+    print(f"▶ 输入: {input_path}")
+    print(f"▶ 输出: {output_path}")
+    print(f"▶ 减面比例: {ratio*100:.0f}%")
+
+    # 1. 重置场景
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+
+    # 2. 导入 FBX
+    print("▶ 导入 FBX...")
+    try:
+        bpy.ops.import_scene.fbx(filepath=str(input_path))
+    except Exception as e:
+        print(f"错误: FBX 导入失败: {e}")
+        sys.exit(1)
+
+    # 3. 统计原始面数
+    total_faces_before = 0
+    for obj in bpy.data.objects:
+        if obj.type == 'MESH':
+            total_faces_before += len(obj.data.polygons)
+    print(f"▶ 原始面数: {total_faces_before}")
+
+    # 4. 对每个网格应用 Decimate 修改器
+    print("▶ 应用减面...")
+    for obj in bpy.data.objects:
+        if obj.type == 'MESH':
+            bpy.ops.object.select_all(action='DESELECT')
+            obj.select_set(True)
+            bpy.context.view_layer.objects.active = obj
+
+            mod = obj.modifiers.new(name="Decimate", type='DECIMATE')
+            mod.decimate_type = 'COLLAPSE'
+            mod.ratio = ratio
+            bpy.ops.object.modifier_apply(modifier="Decimate")
+
+    # 5. 统计减面后面数
+    total_faces_after = 0
+    for obj in bpy.data.objects:
+        if obj.type == 'MESH':
+            total_faces_after += len(obj.data.polygons)
+    print(f"▶ 减面后面数: {total_faces_after}")
+    if total_faces_before > 0:
+        print(f"▶ 实际保留: {total_faces_after / total_faces_before * 100:.1f}%")
+
+    # 6. 导出 FBX
+    print("▶ 导出 FBX...")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        bpy.ops.export_scene.fbx(
+            filepath=str(output_path),
+            use_selection=False,
+            global_scale=1.0,
+            apply_unit_scale=True,
+            apply_scale_options='FBX_SCALE_NONE',
+            bake_space_transform=False,
+            object_types={'MESH', 'ARMATURE', 'EMPTY'},
+            use_mesh_modifiers=True,
+            use_mesh_modifiers_render=True,
+            mesh_smooth_type='FACE',
+            use_armature_deform_only=True,
+            add_leaf_bones=False,
+            primary_bone_axis='Y',
+            secondary_bone_axis='X',
+            use_custom_props=True,
+            axis_forward='-Z',
+            axis_up='Y',
+            path_mode='COPY',
+            embed_textures=False,
+        )
+    except Exception as e:
+        print(f"错误: FBX 导出失败: {e}")
+        sys.exit(1)
+
+    print(f"✓ 减面完成: {output_path}")
+    print(f"  文件大小: {output_path.stat().st_size / 1024:.1f} KB")
+
+    mesh_count = len([o for o in bpy.data.objects if o.type == 'MESH'])
+    armature_count = len([o for o in bpy.data.objects if o.type == 'ARMATURE'])
+    print(f"  网格: {mesh_count}, 骨架: {armature_count}")
+
+
 # ─── 包装 CLI: 自动查找 Blender ─────────────────────────────────────────
 def find_blender() -> str | None:
     """在系统中查找 Blender 可执行文件。"""
@@ -222,6 +334,7 @@ def main():
   %(prog)s --input model.glb --output model.fbx
   %(prog)s --input scene.gltf --output scene.fbx --scale 100
   %(prog)s --input model.glb --output model.fbx --blender "C:/Program Files/Blender Foundation/Blender 4.2/blender.exe"
+  %(prog)s --mode decimate --input model.fbx --output model_low.fbx --ratio 0.5
 
 如果不指定 --blender,脚本会自动搜索系统中的 Blender 安装。
         """,
@@ -238,6 +351,10 @@ def main():
                         help="不烘焙动画")
     parser.add_argument("--no-modifiers", action="store_true",
                         help="不应用修改器")
+    parser.add_argument("--mode", choices=["convert", "decimate"], default="convert",
+                        help="工作模式: convert (GLTF→FBX, 默认) 或 decimate (FBX减面)")
+    parser.add_argument("--ratio", type=float, default=0.5,
+                        help="减面比例 0.01-1.0 (仅 decimate 模式, 默认 0.5)")
     parser.add_argument("--dry-run", action="store_true",
                         help="仅打印将要执行的命令,不实际运行")
 
@@ -250,8 +367,10 @@ def main():
         sys.exit(1)
 
     suffix = input_path.suffix.lower()
-    if suffix not in (".gltf", ".glb"):
+    if args.mode == "convert" and suffix not in (".gltf", ".glb"):
         print(f"警告: 输入文件后缀为 '{suffix}', 预期为 .gltf 或 .glb")
+    elif args.mode == "decimate" and suffix not in (".fbx",):
+        print(f"警告: 输入文件后缀为 '{suffix}', 预期为 .fbx")
 
     output_path = Path(args.output).resolve()
 
@@ -280,13 +399,16 @@ def main():
         "--",
         "--input", str(input_path),
         "--output", str(output_path),
-        "--scale", str(args.scale),
     ]
 
-    if args.no_bake:
-        cmd.append("--no-bake")
-    if args.no_modifiers:
-        cmd.append("--no-modifiers")
+    if args.mode == "decimate":
+        cmd.extend(["--mode", "decimate", "--ratio", str(args.ratio)])
+    else:
+        cmd.extend(["--scale", str(args.scale)])
+        if args.no_bake:
+            cmd.append("--no-bake")
+        if args.no_modifiers:
+            cmd.append("--no-modifiers")
 
     if args.dry_run:
         print("▶ 命令 (dry-run):")
@@ -320,6 +442,17 @@ if __name__ == "__main__":
         IN_BLENDER = False
 
     if IN_BLENDER:
-        convert_inside_blender()
+        # 根据 --mode 参数决定执行哪个功能
+        argv = sys.argv
+        post = argv[argv.index("--") + 1:] if "--" in argv else []
+        mode = "convert"
+        if "--mode" in post:
+            idx = post.index("--mode")
+            if idx + 1 < len(post):
+                mode = post[idx + 1]
+        if mode == "decimate":
+            decimate_inside_blender()
+        else:
+            convert_inside_blender()
     else:
         main()
